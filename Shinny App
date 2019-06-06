@@ -1,0 +1,240 @@
+#!/usr/bin/Rscript
+
+# Load packages.
+library(jsonlite)
+library(plotly)
+library(magrittr)
+library(dplyr)
+library(readr)
+library(lubridate)
+library(zoo)
+library(urltools)
+
+# Import dependencies.
+
+#setwd("C:\\work\\DynamicChartingApp\\dynamic_charting_app\\server")
+options(digits = 5)
+current_folder <- "75+25+VUM"
+static_col <- c("modelName", "PID","Firm", "Account", "Description")
+
+# https://github.com/trestletech/plumber/issues/66
+#* @filter cors
+function(res) {
+  res$setHeader('Access-Control-Allow-Origin', '*') # Or whatever
+  plumber::forward()
+}
+
+# https://www.rplumber.io/docs/rendering-and-output.html#boxed-vs-unboxed-json
+# https://www.rplumber.io/docs/rendering-and-output.html#response-object
+#* Result:
+#* {"status":200,"data":{"message":"Hello World"}}
+#* @serializer unboxedJSON
+#* @get /
+function(){
+  status <- 200
+  message <- 'Margin Analysis'
+
+  list(
+    status = 200,
+    data = list(
+      message = message
+    )
+  )
+}
+
+#* Load the parameters to display in form
+#* @get /load
+function(filePath, headers, stringsasfactors, seperator, display) {
+  status <- 2000
+  fileName <- file 
+    
+  str(filePath)
+  str(headers)
+  str(stringsasfactors)
+  str(seperator)
+  str(display)
+  
+  if(filePath == ""){
+	str("File path is empty, Please select valid statistic file.")
+  }
+  
+  #if(filePath == "" || filePath == " "){
+#	filePath <- file.path(current_folder, file)
+ # }
+  
+  headers <- if(headers == "true") TRUE else FALSE
+  stringsasfactors <- if(stringsasfactors == "true") T else F
+  str(headers)
+  str(stringsasfactors)
+  
+  fileData <- read.csv(filePath, header=headers, sep=seperator, stringsAsFactors = stringsasfactors)
+  
+  col_names <- colnames(fileData)
+  print(col_names)
+  MarginIncreaseLevelColumn <- colnames(fileData %>% dplyr:: select(ends_with("MarginIncreaseLevel")))
+  static_col <- c("modelName", "PID","Firm", "Account", "Description", MarginIncreaseLevelColumn)
+  statistics <- col_names[!(col_names %in% static_col)]
+  print(statistics)
+  
+  plottypes <- c("Box", "Scatter")
+  print(plottypes)
+  portfolios <- c(unique(fileData$Firm),"All")
+  
+  str(MarginIncreaseLevelColumn)
+  marginIncreaseLevels = list() 
+  if(length(MarginIncreaseLevelColumn) > 0)
+  {  
+	  marginIncreaseLevelsData <- fileData %>% dplyr:: select(ends_with("MarginIncreaseLevel"))
+	  marginIncreaseLevels <- c(unique(marginIncreaseLevelsData[,1]))	  
+  }
+  
+  print(portfolios)  
+  print(marginIncreaseLevels)
+  
+  list(
+    status = 2000,
+    data = list(
+      fileName = fileName
+    ),
+    statistics = statistics,
+    plottypes = plottypes,
+    portfolios = portfolios,
+	marginIncreaseLevels = marginIncreaseLevels
+  )
+}
+
+#* Get plotly chart
+#* @serializer htmlwidget
+#* @get /plotly
+function(filePath, headers, stringsasfactors, seperator, display, statistic, marginIncreaseLevel, plot, portfolio) {
+
+  str("Function : plotly")
+  str(filePath)
+  headers <- if(headers == "true") TRUE else FALSE
+  stringsasfactors <- if(stringsasfactors == "true") T else F  
+  
+  fileData <- read.csv(filePath, header=headers, sep=seperator, stringsAsFactors = stringsasfactors)
+  str(marginIncreaseLevel)
+  if(!(marginIncreaseLevel == "") & marginIncreaseLevel > 0)
+  {
+	marginIncreaseLevelColumn <- colnames(fileData %>% dplyr:: select(ends_with("MarginIncreaseLevel")))
+	expr <- lazyeval::interp(quote(x == y), x = as.name(marginIncreaseLevelColumn), y = marginIncreaseLevel)
+	fileData <- fileData %>%  dplyr::filter_(expr)	
+  }
+  
+  ## These conditions will check for specific columns and based on that update the hover text info ##
+  if("DayCount" %in% colnames(fileData)){
+    text = paste0(as.numeric(unlist(fileData[,statistic]))*fileData$DayCount, "/", fileData$DayCount, " ", fileData$modelName, " ", fileData$PID, " ", fileData$Description)
+  } else if("max1DLongIncreaseDate" %in% colnames(fileData)){
+      if(statistic == 'max1DLongIncrease'){
+        text <- paste0(fileData$max1DLongIncreaseDate," ",fileData$modelName, " ", fileData$PID, " ", fileData$Description)
+      } else if(statistic == 'max1DShortIncrease'){
+          text <- paste0(fileData$max1DShortIncreaseDate," ",fileData$modelName, " ", fileData$PID, " ", fileData$Description)
+      } else {
+          text <- paste0(fileData$modelName, " ", fileData$PID, " ", fileData$Description)
+    }
+  } else{
+      text <- paste0(fileData$modelName, " ", fileData$PID, " ", fileData$Description)
+  }
+  
+  fileData <- as_data_frame(fileData, text = text)
+  
+  if(plot == "Box"){
+    p1 <- ggplot(fileData, aes_string(x = "Firm", y = statistic, color = "Firm")) + geom_boxplot()
+    p1 <- p1 + labs( x ="Firm", y = statistic, title = paste0(statistic,"  Analysis"))
+    ggplotly(p1)
+  } else if(plot == "Scatter" && portfolio == "All") {
+    plot_ly(fileData, x = ~PID , y = as.formula(paste0("~",statistic)),mode = "markers", text = ~text, hoverinfo="text+y", hovertext = text,color = ~Firm, type = "scatter") %>% layout(
+      title = paste0(statistic,"  Analysis"), hovermode = "closest")
+  } else {
+    portfolio_data <- fileData %>% filter(Firm == portfolio)
+    plot_ly(portfolio_data, x = ~PID , y = as.formula(paste0("~",statistic)),mode = "markers",text = ~text, hoverinfo="text+y", hovertext = text, type = "scatter") %>% layout(
+      title = paste0(statistic,"  Analysis"))
+  }
+}
+
+#* Get summary data
+#* @serializer htmlwidget
+#* @get /summary
+function(filePath, headers, stringsasfactors, seperator, display, statistic, marginIncreaseLevel, plot, portfolio) {
+  
+  str("Function : summary")
+  headers <- if(headers == "true") TRUE else FALSE
+  stringsasfactors <- if(stringsasfactors == "true") T else F  
+  
+  fileData <- read.csv(filePath, header=headers, sep=seperator, stringsAsFactors = stringsasfactors)
+     
+  if(!(portfolio == "All"))
+  {
+	fileData <- fileData %>% filter(Firm == portfolio) 
+  }
+  
+  str(marginIncreaseLevel)
+  if(!(marginIncreaseLevel == "") & marginIncreaseLevel > 0)
+  {
+	marginIncreaseLevelColumn <- colnames(fileData %>% dplyr:: select(ends_with("MarginIncreaseLevel")))
+	expr <- lazyeval::interp(quote(x == y), x = as.name(marginIncreaseLevelColumn), y = marginIncreaseLevel)
+	fileData <- fileData %>%  dplyr::filter_(expr)	
+  }
+  
+  #summaryData <- data.frame(unclass(summary(fileData)))
+  summaryData <- data.frame(summary(fileData))
+  colnames(summaryData) <- c("Var1","Variable", "Stat")
+  len = length(summaryData$Variable) / length(unique(summaryData$Variable))
+  summaryData[,1] <- rep(c(1:len),length(unique(summaryData$Variable)))
+  summaryData <- reshape(summaryData, idvar = "Variable", timevar = "Var1", direction = "wide")
+  print(summaryData)
+  
+  y <- DT::datatable(summaryData, extensions = 'Buttons', options = list(dom = 'Bfrtip', buttons = c('copy', 'csv', 'excel', 'pdf', 'print'), pageLength = 50, scrollX = FALSE))
+}
+
+#* Plot out data
+#* @serializer htmlwidget
+#* @get /conditional_data
+function(filePath, headers, stringsasfactors, seperator, display, statistic, marginIncreaseLevel, plot, portfolio) {
+  
+  str("Function : conditional_data")
+  headers <- if(headers == "true") TRUE else FALSE
+  stringsasfactors <- if(stringsasfactors == "true") T else F  
+  
+  fileData <- read.csv(filePath, header=headers, sep=seperator, stringsAsFactors = stringsasfactors)
+  
+  if(!(marginIncreaseLevel == "") & !(marginIncreaseLevel == "All") & marginIncreaseLevel > 0)
+  {
+	marginIncreaseLevelColumn <- colnames(fileData %>% dplyr:: select(ends_with("MarginIncreaseLevel")))
+	expr <- lazyeval::interp(quote(x == y), x = as.name(marginIncreaseLevelColumn), y = marginIncreaseLevel)
+	fileData <- fileData %>%  dplyr::filter_(expr)
+  }
+  
+  if(portfolio == "All")
+  {
+	portfolio_data <- fileData %>% mutate(Detailed=paste(PID,Account,Description,sep='_'))
+  }
+  else
+  {
+	portfolio_data <- fileData %>% filter(Firm == portfolio) %>% mutate(Detailed=paste(PID,Account,Description,sep='_'))
+  }
+#  print(portfolio_data)
+  
+  y <- DT::datatable(portfolio_data, extensions = 'Buttons', options = list(dom = 'Bfrtip', buttons = c('copy', 'csv', 'excel', 'pdf', 'print'), pageLength = 50, scrollX = FALSE))
+}
+
+#* Plot out data
+#* @serializer htmlwidget
+#* @get /file_data
+function(filePath, headers, stringsasfactors, seperator, display, statistic, plot, portfolio) {
+  
+  str("Function : file_data")
+  headers <- if(headers == "true") TRUE else FALSE
+  stringsasfactors <- if(stringsasfactors == "true") T else F  
+  
+  fileData <- read.csv(filePath, header=headers, sep=seperator, stringsAsFactors = stringsasfactors)
+  
+  #disp <- "head"
+  #file_data <- head(fileData)
+  
+  #print(file_data)
+  y <- DT::datatable(fileData, extensions = 'Buttons', options = list(dom = 'Bfrtip', buttons = c('copy', 'csv', 'excel', 'pdf', 'print'), pageLength = 50, scrollX = FALSE))
+}
+
+
