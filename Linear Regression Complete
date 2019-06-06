@@ -1,0 +1,481 @@
+###############################################################################################################
+#   Author : Abhishek Singh Shekhawat ; Contact : abhishek.shekhawat.2016@iitkalumni.org
+
+##########################################################################################################################################
+
+#   This function performs following tasks : Automated all the following tasks. Just need data file and it will give you results for following items automatically. 
+
+#     1. Regression Model Assumption Testing : Test all OLS model assumptions and stores p-values & graphs ( Q-Q plot, residuals vs fitted values plot etc.)
+#     2. In Sample Performance : Plots model fitted values against actual values and calculate all standard error metrics
+#     3. Out Sample Performance : Graph out sample fit and calculate all standard error metrics
+#     4. Scenario Projections : Calculate and plot 9 quarter scenario projections for all scenarios
+#     5. Coefficient Stability Analysis : Perform forward and backward stability analysis on coefficient estimates. Chow test for structural breaks 
+##########################################################################################################################################
+
+##########################################################################################################################################
+#                                       Packages that need to be installed  #
+#require(xlsx)
+require(openxlsx)
+require(lmtest)
+require(tseries)
+require(nortest)
+require(strucchange)
+require(car)
+require(QuantPsyc)
+require(ggplot2)
+
+##########################################################################################################################################
+
+#************************ Function Inputs ***************************************************************************************#
+## Following are inputs to the function 
+
+#         1. model_name : It is name of the fitted regression model. It is "lm" object.
+#            Example: model1 <- lm(Y ~ x1 + x2, data = input_data) ; Here model_name is model1
+
+#         2. lag_terms: This shows number of lag terms of dependent variable in the regression model. It should be a non-negative integer.
+#            Example: Values for the lag_terms can be 0,1,2.....
+
+#         3. lag_variable_index : This shows the index number of lag variables of the dependent variable in the coefficients of regression model. This can be found by running "coef(model_name)" command.
+#            Example: Let's say, there is a regression model fitted between notional volume and some macroeconomimc variables along with first lag of notional volume. 
+#            So, regression model : model1 <- lm(notional_volume ~ yld_b + Q3_dummy + lag1_notional_volume, data = input_data) ; 
+#            By running coef(model1), we get 
+#               (Intercept)       yld_b       Q3_dummy    lag1_notional_volume 
+#                  6.233615     -8.173117    -15.973832     -0.246995
+#            Here lag term comes at 4th place. Hence lag_variable_index is equal to 4. If there are no lag terms in the model, then lag_terms and lag_variable_index are set to 0.
+
+#         4. input_data: It is the name of data file which contains information about all input variables used in the regression model. There should be one column with column name "Quarter" in the data.
+#            Make sure Quarter values are in following format  Q1 2008, Q2 2008. 
+
+#         5. scenario_data : It is the name of data file which have scenario projections of all input varibles used in the regression model. 
+#            Make sure that first column of the data file with column name "Quarter", contains date in following format Q3 2016, Q4 2016 etc. if not, then do make it in this format. 
+#            There should be a column with column name of "scenario_name" and scenarios values are listed in the order of ("FBL","FAA","FSA","IBL","IAA","ISA").
+#            Sample scenario data file is as following 
+#                 Quarter YLD.B SPR.BBB    OILV Q3_dummy scenario_name
+#                 Q3 2016  5.40     210 40.5318        1           FBL
+#                 Q4 2016  5.59     210 40.5781        0           FBL
+#                 Q1 2017  5.64     210 40.5508        0           FBL
+#                 Q3 2016  8.55     310 38.3563        1           FAA
+#                 Q4 2016  9.16     350 29.3348        0           FAA
+#                 Q1 2017  9.27     360 24.0171        0           FAA
+#                 Q3 2016 10.69     440 50.3961        1           FSA
+#                 Q4 2016 11.95     520 36.1232        0           FSA
+#                 Q1 2017 12.56     560 26.3031        0           FSA
+#                 Q3 2016  7.47 244.502 39.2088        1           IBL
+#                 Q4 2016  7.39 242.478 41.8880        0           IBL
+#                 Q1 2017  7.38 245.035 42.0120        0           IBL
+#                 Q3 2016  7.97  274.41 41.0908        1           IAA
+#                 Q4 2016  8.73  324.41 42.3678        0           IAA
+#                 Q1 2017  8.93  339.41 39.1761        0           IAA
+#                 Q3 2016 12.08  524.41 49.7142        1           ISA
+#                 Q4 2016 12.85  574.41 43.9515        0           ISA
+#                 Q1 2017 13.61  624.41 39.8296        0           ISA
+#********************************************************************************************************************************#
+stress_testing <- function(model_name,lag_terms,lag_variable_index,input_data, scenario_data)
+{
+  ######################################################################################################################
+  #                                           Regression Model Assumption Testing
+  
+  # Output File : stats.csv. It has information about p-values of all the regression assumptions test. 
+  #                          file would be stored in current working directory. 
+  ###################################################################################################################### 
+  
+  stats <- data.frame(matrix(ncol = 22, nrow = 1))
+  colnames(stats) <- c("R_Sq", "AdjR_Sq","BreuschPagan","BreuschGodfrey_1","BreuschGodfrey_2","BreuschGodfrey_3","BreuschGodfrey_4",
+                               "DurbinWatson","LjungBox1","LjungBox2","LjungBox3","LjungBox4","ShapiroWilks",
+                               "JarqueBera","lilleforus","Anderson_Darling","ADF","PhillipsPerron","KPSS","Ramsey_Test","Harvey_Test","Rainbow_Test")
+  
+  model <- model_name 
+  
+   # Breusch-Pagan - Homoscedasticity (Desired p: > 0.05)
+  BreuschPagan <- bptest(model)
+  stats$BreuschPagan <- as.numeric(BreuschPagan$p.value)
+  plot(model,which = 1)  ## Residuals vs Fitted values graph : There should be no relationship between residuals and fitted values.
+  
+  ### ACF and PACF Plots for Detecting Autocorrelation in residuals
+  acf(model$residuals, main = "ACF Plot for Model Residuals")
+  pacf(model$residuals, main = "PACF Plot for Model Residuals")
+  
+  #  Breusch-Godfrey - Autocorrelation (Desired p: > 0.05)
+  BreuschGodfrey_1 <- bgtest(model, order = 1, order.by = NULL, type = "F")
+  BreuschGodfrey_2 <- bgtest(model, order = 2, order.by = NULL, type = "F")
+  BreuschGodfrey_3 <- bgtest(model, order = 2, order.by = NULL, type = "F")
+  BreuschGodfrey_4 <- bgtest(model, order = 2, order.by = NULL, type = "F")
+  stats$BreuschGodfrey_1 <- BreuschGodfrey_1$p.value
+  stats$BreuschGodfrey_2 <- BreuschGodfrey_2$p.value
+  stats$BreuschGodfrey_3 <- BreuschGodfrey_3$p.value
+  stats$BreuschGodfrey_4 <- BreuschGodfrey_4$p.value
+  
+  #  Durbin-Watson - Autocorrelation (Desired p: > 0.05)
+  DW <- dwtest(model, alternative = "two.sided")
+  stats$DurbinWatson <- DW$p.value
+  
+  #  LjungBox Test - Autocorrelation (Desired p: > 0.05)
+  stats$LjungBox1 <- Box.test(residuals(model), lag = 1, type = "Ljung-Box")$p.value
+  stats$LjungBox2 <- Box.test(residuals(model), lag = 2, type = "Ljung-Box")$p.value
+  stats$LjungBox3 <- Box.test(residuals(model), lag = 3, type = "Ljung-Box")$p.value
+  stats$LjungBox4 <- Box.test(residuals(model), lag = 2, type = "Ljung-Box")$p.value
+  
+  
+  plot(model, which = 2)  ## QQ Plot for Normality analysis 
+  #  Shapiro-Wilks - Residual Normality (Desired p: > 0.05)
+  stats$ShapiroWilks <- shapiro.test(residuals(model))$p.value
+  
+  #  Jarque-Bera - Residual Normality (Desired p: > 0.05)
+  stats$JarqueBera <- as.numeric(jarque.bera.test(residuals(model))$p.value)
+  
+  #  Lilliforus test - Residual Normality (Desired p: > 0.05)
+  stats$lilleforus <- as.numeric(lillie.test(residuals(model))$p.value)
+  
+  #  Anderson Darling - Residual Normality (Desired p: > 0.05)
+  stats$Anderson_Darling <- as.numeric(ad.test(residuals(model))$p.value)
+  
+  #  Augmented-Dickey Fuller (Desired p: < 0.05)
+  stats$ADF <- adf.test(residuals(model))$p.value
+  
+  #  Phillips-Perron (Desired p: < 0.05)
+  stats$PhillipsPerron <- PP.test(residuals(model))$p.value
+  
+  #  KPSS unit root test (Desired p: > 0.05)
+  stats$KPSS <- kpss.test(residuals(model))$p.value
+  
+  # MOdel R Square and Adjusted R Sq.
+  stats$R_Sq <- summary(model)$r.squared 
+  stats$AdjR_Sq <-summary(model)$adj.r.squared
+  
+  ## Linearity Test (Desired p: > 0.05)
+  ### Linearity Ramsey Test
+  stats$Ramsey_Test <- resettest(model, power = 2, type = "regressor")$p.value
+  ### Linearity Harvey Test
+  stats$Harvey_Test <- harvtest(model)$p.value
+  ### Linearity Rainbow Test
+  stats$Rainbow_Test <- raintest(model, fraction = 0.8)$p.value
+  
+  ######################################## Component+ Residuals Plot ################################################
+  crPlots(model, main = paste0("Component + Residuals Plot "," ",":"," ",model$terms[[2]]))
+
+  write.csv(stats,"stats.csv")
+  #return(stats)
+  
+  ######################################################################################################################
+  #                                         In Sample Model Performance Testing
+  
+  # Output File : In-sample fit.csv. It has information about model predicted values. 
+  #                                  file would be stored in current working directory.
+  ###################################################################################################################### 
+  
+  
+  error_metric <- data.frame(matrix(ncol = 8, nrow = 2))
+  colnames(error_metric) <- c("RMSE","MAPE","MAE","MAR", "SD","CERRPCT","RMSE/SD","MAE/MAR")
+  rownames(error_metric) <- c("In-Sample", "Out-of-Sample")
+  
+  model <- model
+  input_data <- input_data
+  input_data$Quarter <- as.character(paste0(substr(input_data$Quarter,4,7)," ",substr(input_data$Quarter,1,2)))
+  input_data$Quarter<-   as.character(input_data$Quarter)
+  date <- as.yearqtr(input_data$Quarter)  ## Add library Zoo here
+  
+  actual <- input_data[,as.character(model$terms[[2]])]
+  predicted <-  colSums(model$coefficients * t(cbind(seq(1),input_data[,variable.names(model)[-1]])))
+  write.csv(predicted, "In-sample fit.csv")  ## This is model predicted values 
+
+  
+  ### This If-Else condition tests for NA values in input and predicted values.
+  if(any(is.na(predicted)) == TRUE)
+  {
+    actual <- actual[-which(is.na(predicted))]
+    predicted <- predicted[!is.na(predicted)]
+  } else if(any(is.na(actual)) == TRUE) {
+    predicted <- predicted[-which(is.na(actual))]
+    actual <- actual[!is.na(actual)]
+  } else {
+    actual <- actual
+    predicted <- predicted 
+  }
+  
+  
+  error_metric[1,1] <- (mean((actual-predicted)^2))^0.5
+  error_metric[1,2] <- 100*mean((abs(actual - predicted)/actual), na.rm = T)
+  error_metric[1,3] <- mean(abs(actual- predicted), na.rm = T)
+  #error_metric[1,4] <- mean(abs(actual - mean(actual, na.rm =T)), na.rm = T)
+  error_metric[1,4] <- sum(abs((actual[-1] - actual[-length(actual)])))/(length(actual) -1)
+  error_metric[1,5] <- sd(actual, na.rm = T)
+  error_metric[1,6] <- ((cumsum(predicted) - cumsum(actual))/cumsum(actual))[length(actual)]
+  #ylim = c(2*min(actual),2*max(actual))
+  
+  par(mar = c(5, 4, 1.4, 1))
+  if((dim(input_data)[1] != length(actual))){
+    plot(date[((dim(input_data)[1]-length(actual))+1):dim(input_data)[1]],actual,type = "o", col = "blue", main = paste0("In Sample Testing"," ",":"," ",model$terms[[2]]),
+         xlab = "Quarter", ylab = model$terms[[2]])
+    lines(date[((dim(input_data)[1]-length(predicted))+1):dim(input_data)[1]],predicted,type = "o", col = "red")
+    #plot.ts(ts(actual), type = "o", col = "blue", main = paste0("In Sample Testing"," ",":"," ",model$terms[[2]]), ylim = c(2*min(actual),2*max(actual)),xlab = "Time Index", ylab = model$terms[[2]])
+    #lines(ts(predicted), type = "o", col = "red")
+    add_legend("bottomright", legend=c("Actual","Projection"), lty = c(1,1),lwd=c(1.5,1.5), 
+               col= c("blue","red"),horiz=FALSE, bty='n', cex=0.8)
+  }else {
+    plot(date[((dim(input_data)[1]-length(actual))+1):dim(input_data)[1]],actual,type = "o", col = "blue", main = paste0("In Sample Testing"," ",":"," ",model$terms[[2]]),
+         xlab = "Quarter", ylab = model$terms[[2]])
+    lines(date[((dim(input_data)[1]-length(predicted))+1):dim(input_data)[1]],predicted,type = "o", col = "red")
+    #plot.ts(ts(actual), type = "o", col = "blue", main = paste0("In Sample Testing"," ",":"," ",model$terms[[2]]), ylim = c(2*min(actual),2*max(actual)),xlab = "Time Index", ylab = model$terms[[2]])
+    #lines(ts(predicted), type = "o", col = "red")
+    add_legend("bottomright", legend=c("Actual","Projection"), lty = c(1,1),lwd=c(1.5,1.5), 
+               col= c("blue","red"),horiz=FALSE, bty='n', cex=0.8)
+  }
+  
+  
+  ######################################################################################################################
+  #                                    Out of Sample Model Performance Testing
+  
+  # Output File : Out-of-sample fit.csv. It has information about out of sample model predicted values.
+  #               Error_Metric.csv. It has information about the error metrics for both in-sample and out-of-sample fit.
+  #                                 file would be stored in current working directory.
+  ######################################################################################################################
+  
+  
+  p1 <- c(1: (dim(input_data)[1]-9))
+  p2 <- c((dim(input_data)[1]-8) :dim(input_data)[1])  ##Exclude last 9 points for testing outsample and build model on remaining data
+  
+  model <- lm(formula = formula(model), data = input_data[p1,c(as.character(model$terms[[2]]),variable.names(model)[-1])])
+  
+  actual_out <- input_data[p2,as.character(model$terms[[2]])]
+  actual_out <- actual_out[!is.na(actual_out)]
+  actual_in <- actual[p1]
+  
+  predicted <-  colSums(model$coefficients * t(cbind(seq(1),input_data[p2,variable.names(model)[-1]])))
+  write.csv(predicted, "Out-of-sample fit.csv")  ## This is model predicted values for out of sample
+  
+  error_metric[2,1] <- (mean((actual_out - predicted)^2))^0.5    ## RMSE
+  error_metric[2,2] <- 100*mean((abs(actual_out - predicted)/actual_out), na.rm = T)  ## MAPE
+  error_metric[2,3] <- mean(abs(actual_out- predicted), na.rm = T)   ## MAE
+  error_metric[2,4] <- sum(abs((actual_in[-1] - actual_in[-length(actual_in)])))/(length(actual_in) - 1)
+  #error_metric[2,4] <- mean(abs(actual_in - mean(actual_in, na.rm =T)), na.rm = T) ## MAR
+  error_metric[2,5] <- sd(actual_in, na.rm = T)  ## SD
+  error_metric[2,6] <- ((cumsum(predicted) - cumsum(actual_out))/cumsum(actual_out))[length(actual_out)] ## CERRPCT
+  
+  #predicted <- c(rep(NA,length(p1)),predicted) ## This is just done to plot predicted values on out-sample time index
+  
+  par(mar = c(5, 4, 1.4, 1))
+  if((dim(input_data)[1] != length(actual))){
+    plot(date[((dim(input_data)[1]-length(actual))+1):dim(input_data)[1]],actual, type = "o", col = "blue", main = paste0("Out Sample Testing"," ",":"," ",model$terms[[2]]),
+          xlab = "Quarter", ylab = model$terms[[2]])
+    lines(date[p2],predicted,type = "o", col = "red")
+    add_legend("bottomright", legend=c("Actual","Projection"), lty = c(1,1),lwd=c(1.5,1.5), 
+               col= c("blue","red"),horiz=FALSE, bty='n', cex=0.8)
+  }else{
+    plot(date[((dim(input_data)[1]-length(actual))+1):dim(input_data)[1]],actual, type = "o", col = "blue", main = paste0("Out Sample Testing"," ",":"," ",model$terms[[2]]),
+         xlab = "Quarter", ylab = model$terms[[2]])
+    lines(date[p2],predicted,type = "o", col = "red")
+    add_legend("bottomright", legend=c("Actual","Projection"), lty = c(1,1),lwd=c(1.5,1.5), 
+               col= c("blue","red"),horiz=FALSE, bty='n', cex=0.8)
+    
+  }
+  
+  
+  ### Two Performance Measures : RMSE/SD and MAE/MAR
+  
+  error_metric$`RMSE/SD` <- error_metric$RMSE/error_metric$SD
+  error_metric$`MAE/MAR` <- error_metric$MAE/error_metric$MAR
+  write.csv(error_metric,"Error_Metric.csv")
+  
+
+  
+  ######################################################################################################################
+  #                                Scenarios Projections Calculation
+  
+  # Output File : scenario_projections.csv. It has information about model predicted scenario projections for all scenarios.
+  #                                         file would be stored in current working directory.
+  
+  ######################################################################################################################
+  
+  scenario_name <- c("FBL","FAA","FSA","IBL","IAA","ISA")   ## Make sure, scenario_data has one column of scenario_name and scenarios are listed as shown in this line
+  FRB <-  scenario_data$scenario_name %in% scenario_name[1:3]   ## This is an indicator variable for FRB provied scenarios
+  
+  model <- model_name
+
+
+  if (lag_terms == 0)
+  {
+    projections <- colSums(model$coefficients * t(cbind(seq(1),scenario_data[,variable.names(model)[-1]])))
+ 
+  } else { 
+    
+    qtr_len <- dim(input_data)[1]   ##
+    
+    
+    initial_lag <- input_data[c(qtr_len: (qtr_len-lag_terms +1)),as.character(model$terms[[2]])]
+    
+    variable_len <- length(model$coefficients)
+    loop_len  <- dim(scenario_data)[1]
+    projections <- NULL
+    
+   
+    for(j in 1:loop_len)
+    {
+      #j <- 15
+      if(j == 1){lag_vector <- initial_lag }else if (scenario_data$scenario_name[j] != scenario_data$scenario_name[j-1]){ lag_vector <- initial_lag}
+      
+      proj <- model$coefficients[1] + colSums(model$coefficients[-c(1,lag_variable_index)]*t(scenario_data[j,variable.names(model)[-c(1,lag_variable_index)]])) +
+                        colSums(model$coefficients[lag_variable_index]*t(lag_vector))
+      
+    
+      if(length(lag_vector) == 1){
+        lag_vector <- proj
+      } else {
+        lag_vector <- c(proj,lag_vector[1:(length(lag_vector)-1)])
+      }
+      projections[j] <- proj
+      
+    }
+      
+  }
+  
+  projections <- data.frame(Quarter = scenario_data$Quarter,scenario_name = scenario_data$scenario_name, projections)
+  FRB <- projections$scenario_name %in% scenario_name[1:3]
+  projections <- data.frame(projections,FRB)
+  projections$Quarter<- paste0(substr(projections$Quarter,4,7)," ",substr(projections$Quarter,1,2)) ## This is done to have increasing dates on X axis.
+  write.csv(projections,"scenario_projections.csv")
+  
+  #### Plotting Scenario Projections for FRB Scenarios 
+
+  scenario_pF <- ggplot(projections[projections$FRB == T,],aes(x = Quarter, y = projections, color = scenario_name, group = scenario_name,shape = scenario_name))
+  scenario_pF <- scenario_pF  + geom_point(size = 1.5) + geom_line()
+  scenario_pF <- scenario_pF + theme(axis.text.x = element_text(angle = 45, hjust = 1)) + ggtitle(paste0("FRB Scenarios Projections "," ",":"," ",model$terms[[2]])) + labs(x="Quarter",y = model$terms[[2]])
+
+  #### Plotting Scenario Projections for Internal Scenarios
+
+  scenario_pI <- ggplot(projections[projections$FRB == F,],aes(x = Quarter, y = projections, color = scenario_name, group = scenario_name,shape = scenario_name))
+  scenario_pI <- scenario_pI  + geom_point(size = 1.5) + geom_line()
+  scenario_pI <- scenario_pI + theme(axis.text.x = element_text(angle = 45, hjust = 1)) + ggtitle(paste0("Internal Scenarios Projections "," ",":"," ",model$terms[[2]])) + labs(x="Quarter",y = model$terms[[2]])
+
+  print(scenario_pF)
+  print(scenario_pI)
+  
+  
+  ######################################################################################################################
+  #                                Coefficient Stability Analysis
+  ######################################################################################################################
+  
+  ##### Forward Stability Analysis
+  stability_forward <- function(k){
+    
+    beta <- data.frame(matrix(ncol = length(model$coefficients), nrow = dim(input_data)[1]))
+    n <- dim(input_data)[1]-k
+    
+    for(i in 1:(n+1)){
+      
+      m1 <- lm(formula = formula(model), data = input_data[1:k,c(as.character(model$terms[[2]]),variable.names(model)[-1])])
+  
+      beta[i,] <- coef(m1)
+      
+      k <- k+1
+    }
+    
+    
+    return (beta)
+  }
+  
+  ##### Backward Stability Analysis
+  stability_back<-function(n){
+    beta <- data.frame(matrix(ncol = length(model$coefficients), nrow = dim(input_data)[1]))
+    
+    a <- 1
+    for(k in (n:1)){
+      
+      m1 <- lm(formula = formula(model), data = input_data[k+1:dim(input_data)[1],c(as.character(model$terms[[2]]),variable.names(model)[-1])])
+      
+      beta[a,] <- coef(m1)
+      
+      a <- a+1
+    }
+    
+    return (beta)
+  }
+  
+  #### SE Caluclation
+  se<-function(k){
+    se <- data.frame(matrix(ncol = length(model$coefficients), nrow = dim(input_data)[1]))
+    
+    n <- dim(input_data)[1]-k
+    
+    for(i in 1:(n+1)){
+      
+      m1 <- lm(formula = formula(model), data = input_data[1:k,c(as.character(model$terms[[2]]),variable.names(model)[-1])])
+      
+      se[i,] <- coef(summary(m1))[, "Std. Error"]
+      
+      k <- k+1
+    }
+      
+    return (se)
+  }
+  
+  ### Confin Calculation
+  confin <- function(k){
+    beta <- stability_forward(k)
+    er  <-  se(k)
+    beta_u <- data.frame(matrix(ncol = length(model$coefficients), nrow = dim(input_data)[1]))
+    beta_l <- data.frame(matrix(ncol = length(model$coefficients), nrow = dim(input_data)[1]))
+    
+    beta_u <- beta + qt(0.975,dim(input_data)[1])*er
+    beta_l <- beta - qt(0.975,dim(input_data)[1])*er 
+    
+    return (cbind(beta_u,beta_l))
+  }
+  
+  
+  ######################################## Stability Plots ################################################
+  for( i in 2: length(model$coefficients))
+  {
+    #i <- 4
+    k <- floor((dim(input_data)[1])*0.7)
+    n <- dim(input_data)[1] - k
+    beta <- stability_forward(k)[!is.na(stability_forward(k)[,i]),i]
+    
+    
+    beta <- c(rep(NA,(dim(input_data)[1]-length(beta))),beta) ## This is just done to plot predicted values on out-sample time index
+    
+    y_min <- min((confin(k)[!is.na(confin(k)[,i+length(model$coefficients)]),i+length(model$coefficients)]))
+    y_max <- max((confin(k)[!is.na(confin(k)[,i]),i]))
+                 
+  
+    par(mar = c(5, 4, 1.4, 1))
+    plot(date,beta,type = "l",  main = paste0("Stability Analysis"," ",":"," ",variable.names(model)[i]), ylim = c(y_min,y_max),xlab = "Quarter", ylab = "Coefficient Estimate with Confidence Interval")
+    #plot(c(1:length(beta)),beta,type = "l",  main = paste0("Stability Analysis"," ",":"," ",variable.names(model)[i]), ylim = c(y_min,y_max),xlab = "Number of Observations", ylab = "Coefficient Estimate with Confidence Interval")
+    
+    abline(h = model$coefficients[i], col = "blue")
+    abline(h = confint(model)[i,2], col = "Red")
+    abline(h = confint(model)[i,1], col = "Red")
+    
+    
+    beta <- stability_back(n)[1:n,i]
+    if(any(is.na(beta)) == FALSE){
+      lines(date[1:n],beta,lty = 2)
+      add_legend("bottomright", legend=c("Forward","Backward"), lty = c(1,1),lwd=c(1.5,1.5), 
+                 col= c("blue","red"),
+                 horiz=FALSE, bty='n', cex=0.8)
+      
+    }
+    add_legend("bottomleft", legend=c("Estimate","Conf. Level"), lty = c(1,2),lwd=c(1.5,1.5), 
+              horiz=FALSE, bty='n', cex=0.8)
+  }
+  ######################################## Chow test ################################################
+
+  qlr=Fstats(model,data = input_data[,c(as.character(model$terms[[2]]),variable.names(model)[-1])])
+  plot(qlr,alpha=0.05, main = "Chow Test for Model")
+  sctest(qlr,type="supF", col = "red")
+  lines(breakpoints(qlr),col="red",lwd=2)
+  
+  results <- list(stats,error_metric,predicted,projections)  
+  return(results)
+ 
+}
+
+
+source(file.path("Y:/Abhishek/Scenarios/Secondary Convertibles Gross Revenue Model/MRM Analysis/Codes","Regression Analysis.R"))
+
+# non_client_rev_inventory ~ YLD_B.QoQD + DIST.QoQP + Q1_2009 + Lag1_Non_Rev
+pro <- stress_testing(model3,1,5,model_data,scenario_data)
+#pro
+#projections<- stress_testing(model,1,5,input_data,scenario_data)
+#rmarkdown::render(file.path("Y:/Abhishek/Scenarios/Secondary Convertibles Gross Revenue Model/MRM Analysis/Codes","testing_automate.R"), "pdf_document")
+
+
