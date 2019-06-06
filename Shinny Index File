@@ -1,0 +1,13 @@
+library(plumber)
+
+set_wd <- function() {
+  library(rstudioapi) # make sure you have it installed
+  current_path <- getActiveDocumentContext()$path 
+  setwd(dirname(current_path ))
+  print( getwd() )
+}
+
+set_wd()
+
+r <- plumb('app.R')  # Where 'app.R' is the location of the file shown above
+r$run(port = 8000)
