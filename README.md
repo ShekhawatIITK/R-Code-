@@ -1,2 +1,4 @@
 # R-Code-
-Different R codes for linear regression, ANOVA, hypothesis testing 
+## Linear Regression : Complete code for testing linear model assumptions, prediction, model performance etc. 
+## Shinny App & Index : Shinny App for dynamic plotting of risk number statistics 
+
