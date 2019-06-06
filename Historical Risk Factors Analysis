@@ -1,0 +1,278 @@
+#**********  This code is used for historical data validation. It will calculate and plot log -returns, 
+# ** large-returns, Correlation Structure, Volatility Structure. *********** #
+## Change plot index in plot for loop as well as some title names before running it. ##
+
+## Required Packages 
+library(lubridate)
+#library(formattable)
+library(readxl)
+library(tibble)
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(reshape2)
+library(plotly)
+#library(openxlsx)
+
+
+
+data_path <- "C:/F&O Resources/F&O Resources/Valildation/Futures"
+setwd(data_path)
+returns_path <- file.path(getwd(),"Log Return")
+#if(dir.exists(returns_path)) unlink(returns_path, recursive = T) else dir.create(returns_path)
+dir.create(returns_path)
+graph_path <- file.path(returns_path,"Returns Graph")
+if(dir.exists(graph_path)) unlink(returns_path) else dir.create(graph_path)
+returns_plot_title <- "XAE Logreturn Time Series of "
+cor_plot_title <- 'XAE Logreturn Pairwise Correlation of Rolling Contracts - LB 120 days'
+vol_plot_title <- 'XAE Futures Volatility Structures'
+
+lookback_window <- 120
+num_contracts <- 5
+
+
+prices <- read_excel("XAE_Curve_data_v1.xlsx")  ## This is complete historical curve data 
+prices <- prices[,c(3,4,5,7,9)]  ## Select relevant columns
+prices[,"TRADE_DATE"] <- as.Date(prices$TRADE_DATE, format = "%d-%b-%y")
+prices[,"TERM_DATE"] <-  as.Date(prices$TERM_DATE, format = "%d-%b-%y")
+prices <- arrange(prices,TRADE_DATE, SOURCE_CONTRACT_SMART_CODE)
+prices <- prices %>% select(TRADE_DATE,TERM_DATE,PRICE, everything())
+prices <- prices[!duplicated(prices[c(1,2,3)]),]
+unique_dates <- unique(prices$TRADE_DATE)
+
+id <- rep(seq(1:num_contracts), dim(prices)[1]/num_contracts)
+prices <- data.frame(prices, id = id)
+
+
+
+##### **************** Rolling Returns Validation  *******************################
+
+contracts <- reshape(prices[,c(1,5,6)], idvar = "TRADE_DATE", timevar = "id", direction = "wide") ## Contracts
+raw_prices <- reshape(prices[,c(1,3,6)], idvar = "TRADE_DATE", timevar = "id", direction = "wide") ## Prices
+market_ind <- reshape(prices[,c(1,4,6)], idvar = "TRADE_DATE", timevar = "id", direction = "wide") ## Prices
+
+
+returns <-as_data_frame(matrix(NA, nrow = dim(raw_prices)[1], ncol = dim(raw_prices)[2]))
+returns[,1] <- unique_dates
+
+
+## Loop over starting from each row to last column
+for( i in 2:dim(raw_prices)[1]){
+  for( j in 2: dim(raw_prices)[2]){
+    if(contracts[i,j] == contracts[i-1,j]){
+      returns[i,j] = log(raw_prices[i,j]) - log(raw_prices[i-1,j])
+    } else { 
+      if(j < dim(raw_prices)[2]){
+        returns[i,j] = log(raw_prices[i,j]) - log(raw_prices[i-1,j+1])
+      }
+      
+    }
+  }
+  
+}
+
+colnames(returns)[1] <- "Date"
+colnames(returns)[-1] <- paste0("Roll",seq(1:num_contracts)) 
+
+returns <- returns[-1,]
+
+##*************** Create Extra Contract **************#########
+ind_date_1 <- returns[(which(is.na(returns[,num_contracts+1]) == TRUE)-1), 1]$Date # Last business day contract
+ind_date_2 <- returns[(which(is.na(returns[,num_contracts+1]) == TRUE)), 1]$Date # First business day contract
+temp_return <- NULL 
+
+for ( i in 1: length(ind_date_1)){
+  
+  temp_price_1 <- prices[prices$TRADE_DATE == ind_date_1[i],] # Data on which extrapolation needs to be done
+  temp_price_2 <- prices[prices$TRADE_DATE == ind_date_2[i],] 
+  last_index <- dim(temp_price_1)[1]
+  extra_pol_price <-  2*temp_price_1$PRICE[last_index] - temp_price_1$PRICE[last_index-1]
+  temp_return[i] <- log(temp_price_2$PRICE[last_index]) - log(extra_pol_price)
+  
+}
+
+returns[which(is.na(returns[,num_contracts+1]) == TRUE), num_contracts+1] <- temp_return # Setting last column return 
+
+ 
+x <- returns %>% pull(1)
+i <- NULL
+
+### Plotting Log returns 
+for ( i in 2 : (num_contracts+1)){
+  y <- returns %>% pull(i)
+  pdf(file = file.path(graph_path,paste0(colnames(returns)[i],".pdf", sep = "")))
+  plot(x, y, type = 'l', col = "blue", main = paste0(returns_plot_title,colnames(returns)[i],sep = ""), xlab = "Date", ylab = "Log Returns")
+  abline(h = mean(y,na.rm = T) + 2*sd(y,na.rm = T), col = "red", lty = "dashed")
+  abline(h = mean(y) - 2*sd(y), col = "green", lty = "dashed")
+  legend("bottomright", legend=c("Log Returns", "Mean + 2SD", "Mean - 2SD"),col=c("blue", "red", "green"), lty=c(1,2,2), cex=0.8)
+  dev.off()
+}
+
+large_returns <- as_data_frame(matrix(NA, nrow = 50, ncol = num_contracts*2))
+large_returns1 <- as_data_frame(matrix(NA, nrow = 25, ncol = num_contracts*2))
+large_returns2 <- as_data_frame(matrix(NA, nrow = 25, ncol = num_contracts*2))
+
+for(i in 1:num_contracts){
+  test <- returns[,c(1,i+1)]
+  colnames(test) <- c("Date","Roll")
+  test <- arrange(test, Roll)
+  large_returns1[,c(2*i-1,2*i)] <- head(test, n = 25)  ## negative largest moves 
+  test <- arrange(test, -Roll)
+  large_returns2[,c(2*i-1,2*i)] <- test ## positive largest moves
+  
+  colnames(large_returns)[c(2*i-1,2*i)] <- c(paste0("Date",i,sep=""),paste0("Roll",i, sep = ""))
+}
+
+#large_returns <- rbind(large_returns1, large_returns2)
+colnames(large_returns1) <- colnames(large_returns)
+colnames(large_returns2) <- colnames(large_returns)
+
+
+#write.table(large_returns1, file = "H:/F&O Resources/Project Work/Brooklyn/Valildation/Gold Futures/Log Return/large_returns_v1.csv")
+#write.table(large_returns2, file = "H:/F&O Resources/Project Work/Brooklyn/Valildation/Gold Futures/Log Return/large_returns_v1.csv", append = T)
+
+analysis_data <- list("raw_prices" = raw_prices, "market_indicator" = market_ind)
+list_of_datasets <- list("Negative Returns" = large_returns1, "Positive Returns" = large_returns2)
+openxlsx:: write.xlsx(returns,file = file.path(returns_path, "log_Returns.xlsx"))
+openxlsx:: write.xlsx(list_of_datasets,file = file.path(returns_path, "large_Returns.xlsx"))
+openxlsx:: write.xlsx(analysis_data,file = file.path(returns_path, "raw_prices_wide.xlsx"))
+#### *******************  Correlation Curve Validation ******************* ##################
+
+############# Pair wise Correlation between Rolling Returns 
+corr_curve <- as_data_frame(matrix(NA, nrow = (dim(raw_prices)[1]-1), ncol = num_contracts-1))
+
+## This is for Roll1 vs Roll2, Roll2 vs Roll3 and so on till Roll71 vs Roll72
+lb <- lookback_window
+name <- NULL
+
+for( k in 2 :num_contracts){
+  name[k] <- paste0(colnames(returns)[k], "-", k, sep = "") 
+}
+
+row_index <- seq(1,num_contracts-1,1)
+col_index <- row_index+1
+
+for(j in (dim(corr_curve)[1]): lb+1){
+  
+  returns_subset <- returns[c(j:(j-lb)),-1]
+  corr_curve[j,row_index] <- diag(cor(returns_subset)[row_index,col_index]) # Do take care of this. It's magic and written after a thought.
+
+}
+
+dates <- returns[(lb+1):dim(corr_curve)[1],1]
+corr_curve <- corr_curve[-c(1:(lb)),]
+colnames(corr_curve) <- name[-1]
+corr_curve <- data.frame(Date = dates, corr_curve)
+
+
+correlation_line_plot <- function(data, index) {
+  corr_data <- data[,c(1,index)]
+  melted <- melt(corr_data, id.var='Date')
+  colnames(melted)[2] <- "Contracts"
+  g <- ggplot(melted, aes(x=Date, y=value, col=Contracts)) + geom_line()
+  g <- g + labs( x ="date", y = "Correlation", caption = "Lookback: 120 days",title = cor_plot_title )
+  return(g)
+}
+
+correlation_box_plot <- function(data, index) {
+  corr_data <- data[,c(1,index)]
+  melted <- melt(corr_data, id.var='Date')
+  colnames(melted)[2] <- "Contracts"
+  g <- ggplot(melted, aes(x=Contracts, y=value, col=Contracts)) + geom_boxplot()
+  g <- g + labs( x ="Rolling Contracts", y = "Correlation", caption = "Lookback: 120 days",title = cor_plot_title )
+  return(g)
+}
+
+vol_plot <- function(data, index) {
+  corr_data <- data[,c(1,index)]
+  melted <- melt(corr_data, id.var='Date')
+  colnames(melted)[2] <- "Contracts"
+  g <- ggplot(melted, aes(x=Date, y=value, col=Contracts)) + geom_line()
+  #g <- g + scale_x_date(date_labels = "%Y")
+  g <- g + labs( x ="Date", y = "Volatility",title = vol_plot_title, caption = 'lamda = 0.97')
+  return(g)
+}
+
+dir.create(file.path(getwd(),"Correlation"))
+setwd("./Correlation")
+
+if(lookback_window == 120){
+  dir.create("./Lookback120")
+  setwd("./Lookback120")
+  openxlsx::write.xlsx(corr_curve, file.path("corr_curve_120.xlsx"))
+}else {
+  dir.create("./Lookback60")
+  setwd("./Lookback60")
+  openxlsx::write.xlsx(corr_curve, file.path("corr_curve_60.xlsx"))
+  }
+
+
+for( i in 1:1){
+  #i <- 1
+  if( i == 1){
+    a <- correlation_line_plot(corr_curve,index =  c(2:5))
+    a <- ggplotly(a)
+    htmlwidgets::saveWidget(a,paste0(cor_plot_title,"_Line ", 12*i-11,"To", 5*i,".html", sep = ""))
+    #ggsave(file = paste0(cor_plot_title,"_Line ", 12*i-11,"To", 7*i,".pdf", sep = ""))
+    b <- correlation_box_plot(corr_curve,index =  c(2:5))
+    htmlwidgets::saveWidget(a,paste0(cor_plot_title,"_Box ", 12*i-11,"To", 5*i,".html", sep = ""))
+    #ggsave(file = paste0(cor_plot_title,"_Box ", 12*i-11,"To", 7*i,".pdf", sep = ""))
+  }
+  else{
+    a <- correlation_line_plot(corr_curve,index =  seq(7*i-5,num_contracts))
+    a <- ggplotly(a)
+    htmlwidgets::saveWidget(a,paste0(cor_plot_title,"_Line ", 7*i-6,"To", num_contracts,".html", sep = ""))
+    #ggsave(file = paste0(cor_plot_title,"_Line ", 7*i-6,"To", 7*i,".html", sep = ""))
+    b <- correlation_box_plot(corr_curve,index =  seq(7*i-5,num_contracts))
+    htmlwidgets::saveWidget(a,paste0(cor_plot_title,"_Box ",  7*i-6,"To", num_contracts,".html", sep = ""))
+    #ggsave(file = paste0(cor_plot_title,"_Box ",  7*i-6,"To", 7*i,".pdf", sep = ""))
+  }
+  
+}
+
+
+
+#list_of_datasets <- list("Pairwise_Correlation_LB60" = corr_curve_60, "Pairwise_Correlation_LB120" = corr_curve_120)
+#openxlsx:: write.xlsx(list_of_datasets, file = "C:\\Users\\E30837\\F&O Resources\\Project Work\\Brooklyn\\Valildation\\Silver Futures\\Correlation\\pairwise_correlation_lookback_Gold_v1.xlsx")
+
+setwd(data_path)
+###########*********  Volatility Calculation *********** ################
+lamda <- 0.97
+vol_str <- as_data_frame(matrix(NA, nrow = dim(returns)[1], ncol = num_contracts))
+vol_str[1,] <- (returns[1,-1])^2
+for(i in 2: dim(returns)[1]) {
+  
+  vol_str[i,] <- lamda*vol_str[i-1,] + (1-lamda)*(returns[i,-1])^2
+  
+}
+
+vol_str <- as_data_frame(apply(vol_str,c(1,2),sqrt))
+id <- seq(1:num_contracts)
+colnames(vol_str) <- paste0("Roll ", id, sep = "")
+vol_str <- data.frame(Date = returns$Date, vol_str)
+
+dir.create(file.path(getwd(),"Volatility"))
+setwd("./Volatility")
+
+for( i in 1:1){
+  #i <- 1
+  if( i == 1){
+    a <- vol_plot(vol_str,index =  c(2:6))
+    a <- ggplotly(a)
+    htmlwidgets::saveWidget(a,paste0(vol_plot_title, 6*i-5,"To", 5*i,".html", sep = "") )
+    #ggsave(file = paste0(vol_plot_title, 6*i-5,"To", 6*i,".pdf", sep = ""))
+    
+  }
+  else{
+    a <- vol_plot(vol_str,index =  seq(6*i-3,num_contracts+1))
+    a <- ggplotly(a)
+    htmlwidgets::saveWidget(a,paste0(vol_plot_title, 6*i-4,"To", num_contracts,".html", sep = ""))
+    #ggsave(file = paste0(vol_plot_title, 6*i-5,"To", num_contracts,".pdf", sep = ""))
+    
+  }
+  
+}
+
+
+
+
